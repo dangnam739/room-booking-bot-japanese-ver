@@ -1,0 +1,22 @@
+language: jp
+timezone: "Asia/Ho_Chi_Minh"
+pipeline:
+- name: "japanese_tokenizer.SudachiTokenizer"
+- name: "WhitespaceTokenizer"
+- name: "RegexFeaturizer"
+- name: "regex_extract.RegexEntityExtractor"
+- name: "CountVectorsFeaturizer"
+- name: "CountVectorsFeaturizer"
+  analyzer: "char_wb"
+  min_ngram: 1
+  max_ngram: 4
+- name: "EmbeddingIntentClassifier"
+policies:
+- name: MemoizationPolicy
+- name: KerasPolicy
+- name: MappingPolicy
+- name: FormPolicy
+- name: FallbackPolicy
+  nlu_threshold: 0.4
+  core_threshold: 0.25
+  fallback_action_name: fallback_revert
