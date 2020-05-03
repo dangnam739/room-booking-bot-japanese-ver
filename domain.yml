@@ -1,0 +1,180 @@
+session_config:
+  session_expiration_time: 5.0
+  carry_over_slots_to_new_session: false
+intents:
+- greeting
+- update_existing_slot
+- affirmative
+- negative
+- cancelling
+- thanks
+- booking_modify_add
+- booking_query_empty
+- booking_query_room_schedule
+- booking_query_room_status
+- booking_query_empty_now
+- booking_modify_cancel
+- ask_supported_features
+- goodbye
+entities:
+- datetime_to
+- room_id
+- datetime_from
+- datetime_
+- project
+- topic
+- capacity
+- repeat
+- repeat_start
+- repeat_end
+- datetime_1
+- subject
+- attendees
+- rooom_id
+- no_of_people
+- datetim_from
+slots:
+  attendees:
+    type: unfeaturized
+    auto_fill: false
+  capacity:
+    type: unfeaturized
+    auto_fill: false
+  confirm_booking:
+    type: unfeaturized
+    auto_fill: false
+  confirm_booking_repeat:
+    type: unfeaturized
+    auto_fill: false
+  confirm_cancel:
+    type: unfeaturized
+    auto_fill: false
+  datetime_:
+    type: unfeaturized
+    auto_fill: false
+  datetime_1:
+    type: unfeaturized
+    auto_fill: false
+  repeat:
+    type: unfeaturized
+    auto_fill: false
+  repeat_end:
+    type: unfeaturized
+    auto_fill: false
+  repeat_start:
+    type: unfeaturized
+    auto_fill: false
+  requested_slot:
+    type: unfeaturized
+  room_id:
+    type: unfeaturized
+    auto_fill: false
+  subject:
+    type: unfeaturized
+    auto_fill: false
+responses:
+  utter_greeting:
+  - text: こんにちは。
+  utter_fallback:
+  - text: 入力データーが理解できません。もう一度ご記入いただけますか。
+  utter_ask_room_id:
+  - text: 会議室名をご入力ください。
+  utter_ask_datetime_:
+  - text: 予約時間をご入力ください。
+  utter_reenter_datetime_:
+  - text: DD-MM-YYYY HH：MM -> DD-MM-YYYY HH：MMの形式で入力してください。
+  utter_ask_datetime_1:
+  - text: キャンセルする会議の開始時間をご入力ください。
+  utter_reenter_datetime_1:
+  - text: DD-MM-YYYY HH：MMの形式でご入力ください。
+  utter_ask_repeat_end:
+  - text: DD-MM-YYYY HH：MMの形式で繰り返すカレンダーの終了時間をご入力ください。
+  utter_ask_subject:
+  - text: 会議のタイトルをご入力ください。
+  utter_abort:
+  - text: 要求がキャンセルされました。
+  utter_invalid_datetime:
+  - text: 時間のフォーマットが無効です。
+  utter_ask_confirm_cancel:
+  - text: あなたは{datetime_1}の{room_id}室のキャンセルをご確認ください。
+  utter_no_free_room:
+  - text: 現在、空室はありません。
+  utter_cancel_success:
+  - text: キャンセルの要求を完了しました。
+  utter_add_friend:
+  - text: チャットワークで、ボットのコンタクトをご追加ください。
+  utter_insufficient_privilege:
+  - text: "会議室の予約権限がありません。\nBOスタッフやGroup Leaderに予約をご依頼ください。"
+  utter_already_booked:
+  - text: "予約できません。\n当室がすでに予約されています。"
+  utter_already_booked_all:
+  - text: "予約できません。\n全ての会議室がすでに予約されています。"
+  utter_invalid_parameters:
+  - text: "予約できません。\n入力データのエラーがあるようです。"
+  utter_no_free_slot:
+  - text: '{datetime_}、{room_id}室は空いていないそうです。'
+  utter_no_free_room_slot:
+  - text: '{datetime_}、空室がなさそうです。'
+  utter_status_available_none:
+  - text: ただ今、カメラで確認できませんが、カレンダー上は予約されていません。
+  utter_status_booked_none:
+  - text: ただ今、カメラで確認できませんが、カレンダー上は予約されています。
+  utter_headcount_unreachable:
+  - text: ただ今、カメラで確認できませんので、後でもう一度お試しください。
+  utter_welcome:
+  - text: お役に立てて嬉しいです。
+  utter_not_logged_in:
+  - text: "予約できません。\nまず、https://rooms.sun-asterisk.vn にSun*Gsuiteアカウンでログインしてください。。"
+  utter_ask_attendees:
+  - text: "会議にゲストを招待しますか？\nゲストを招待したい場合、ゲストのメアドリストをご入力ください。"
+  utter_invalid_attendees:
+  - text: かしこまりました。
+  utter_status_group_error:
+  - text: 2つ以上の会議室を同時に確認できませんので、一つずつご質問ください。
+  utter_invalid_room_id:
+  - text: "入力した会議室は空いていません。\n提案したリストに従って、再度ご入力てください。"
+  utter_headcount_18f:
+  - text: ただ今、18階の会議室の状況が確認できません。
+  utter_no_current_request:
+  - text: 途中で要求はありません。
+actions:
+- utter_greeting
+- booking_modify_cancel_form
+- utter_fallback
+- utter_ask_room_id
+- utter_ask_datetime_
+- utter_abort
+- utter_invalid_datetime
+- action_booking_query_empty_now
+- utter_ask_datetime_1
+- utter_ask_confirm_cancel
+- booking_modify_add_form
+- utter_ask_subject
+- utter_ask_repeat_end
+- utter_no_free_room
+- utter_cancel_success
+- utter_add_friend
+- utter_insufficient_privilege
+- utter_already_booked
+- utter_invalid_parameters
+- utter_no_free_slot
+- utter_no_free_room_slot
+- booking_query_room_schedule_form
+- booking_query_empty_form
+- booking_query_room_status_form
+- utter_status_available_none
+- utter_status_booked_none
+- utter_welcome
+- utter_not_logged_in
+- utter_headcount_unreachable
+- fallback_revert
+- action_supported_features
+- utter_invalid_attendees
+- utter_ask_attendees
+- utter_status_group_error
+- utter_already_booked_all
+- utter_invalid_room_id
+- utter_reenter_datetime_
+- utter_reenter_datetime_1
+- utter_headcount_18f
+- utter_no_current_request
