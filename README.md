@@ -1,4 +1,4 @@
-# room-booking-bot-AI
+# room-booking-bot-AI-japanese
 Japanese version of room booking chatbot
 
 **Room Booking Bot** can help you to book, cancel a meeting room and daily meeting room.
