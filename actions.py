@@ -8,6 +8,10 @@ from abc import ABC
 from typing import Any, Text, Dict, List, Union, Optional
 import re
 from datetime import datetime, timedelta
+from random import choice
+from email.utils import parseaddr
+from pprint import pprint
+
 from rasa_sdk import Action, Tracker
 from rasa_sdk.events import (
     EventType,
@@ -20,26 +24,27 @@ from rasa_sdk.events import (
 from rasa_sdk.interfaces import ActionExecutionRejection
 from rasa_sdk.executor import CollectingDispatcher
 from rasa_sdk.forms import FormAction, REQUESTED_SLOT
-from pha_helper import ROOM_IDS
+
 from requests.exceptions import ConnectTimeout
-from rb_helper import (
-    AlreadyBookedException,
-    InvalidParameterException,
-    NotLoggedInException,
-    get_free,
-    get_headcount,
+from dateutil.parser import parse, ParserError
+from pha_helper import ROOM_IDS
+from api.hn import (
     booking_modify_cancel,
     booking_modify_add_book,
     booking_query_room_status,
     booking_query_room_schedule,
     booking_query_empty,
-    check_recurring_room
+    check_recurring_room,
+    get_free,
+    get_headcount,
+    AlreadyBookedException,
+    InvalidParameterException,
+    NotLoggedInException,
+    location,
+    tz,
+    PROPER_NAMES,
+    ROOM_GROUPS
 )
-from email.utils import parseaddr
-from constants import tz, PROPER_NAMES, ROOM_GROUPS
-from dateutil.parser import parse, ParserError
-from pprint import pprint
-
 
 SLOT_NAMES = {
   'attendees': 'ゲストリスト',
@@ -52,6 +57,17 @@ SLOT_NAMES = {
   'room_id': '会議室',
   'subject': 'タイトル',
 }
+
+
+def add_template_to_message_queue(template, tracker, domain):
+    '''
+    Add a random entry of a template response to the message queue.
+    This message queue is implemented to prevent duplicate messages.
+    '''
+    if 'pending' not in tracker.slots:
+        tracker.slots["pending"] = []
+    tracker.slots["pending"].append(
+        choice(domain["responses"][template])["text"])
 
 class CancellableForm(FormAction, ABC):
     '''
@@ -80,17 +96,25 @@ class CancellableForm(FormAction, ABC):
         input: D/W/M(-2)
         '''
         if '-2' in repeat_str:
-            ret = '毎2'
+            ret = '2'
+            if 'D' in repeat_str:
+              ret += '日ごとに'
+            elif 'W' in repeat_str:
+                ret += '週間毎'
+            elif 'M' in repeat_str:
+                ret += 'カ月ごとに'
+            else:
+                ret = 'ERROR'
         else:
             ret = '毎'
-        if 'D' in repeat_str:
-            ret += '日'
-        elif 'W' in repeat_str:
-            ret += '週'
-        elif 'M' in repeat_str:
-            ret += '月'
-        else:
-            ret = 'ERROR'
+            if 'D' in repeat_str:
+                ret += '日'
+            elif 'W' in repeat_str:
+                ret += '週'
+            elif 'M' in repeat_str:
+                ret += '月'
+            else:
+                ret = 'ERROR'
         return ret
 
     def slot_mappings(self) -> Dict[Text, Union[Dict, List[Dict]]]:
@@ -174,8 +198,10 @@ class CancellableForm(FormAction, ABC):
                     else:
                         updated.append(SLOT_NAMES[key])
 
+            # accumulate strings to be sent to the user
+            tracker.slots["pending"] = []
             if len(updated) > 0:
-                dispatcher.utter_message("次の情報を更新しました： \n" +
+                tracker.slots["pending"].append("次の情報を更新しました： \n" +
                     '\n'.join(updated) + ".")
 
             slot_values.update(self.extract_requested_slot(dispatcher, tracker, domain))
@@ -185,9 +211,10 @@ class CancellableForm(FormAction, ABC):
                 # if some slot was requested but nothing was extracted
                 # it will allow other policies to predict another action
 
-                dispatcher.utter_message(template="utter_fallback")
+                add_template_to_message_queue("utter_fallback", tracker, domain)
                 if 'datetime_' in slot_to_fill:
-                    dispatcher.utter_message(template=f"utter_reenter_{slot_to_fill}")
+                    add_template_to_message_queue(
+                        f"utter_reenter_{slot_to_fill}", tracker, domain)
                 return [UserUtteranceReverted()]
 
                 # raise ActionExecutionRejection(
@@ -200,7 +227,10 @@ class CancellableForm(FormAction, ABC):
                           tracker: Tracker,
                           domain: Dict[Text, Any]) -> Optional[List[Dict]]:
         """Request the next slot and utter template if needed,
-            else return None"""
+            else return None """
+
+        if 'pending' not in tracker.slots:
+            tracker.slots['pending'] = []
 
         for slot in self.required_slots(tracker):
             if self._should_request_slot(tracker, slot):
@@ -239,7 +269,7 @@ class CancellableForm(FormAction, ABC):
                         try:
                             suggestions = check_recurring_room(
                                 tracker.sender_id ,
-                                'HN-KN',
+                                location,
                                 time_start,
                                 time_end,
                                 repeat,
@@ -255,25 +285,41 @@ class CancellableForm(FormAction, ABC):
                         if room_id not in suggestions:
                             if len(suggestions) == 0:
                                 dispatcher.utter_message(
-                                    "要件を満たす屋はありません。 " +
-                                    "上記の要求を保存しました。再試行したいですか。"
+                                    "頂いた要求に応じる空室がありません。別の時間帯でもう一度お試しください。"
                                 )
                                 return self.deactivate()
+
+                        if room_id not in ROOM_GROUPS and room_id not in suggestions:
                             # if it's salvageable
                             ret = tracker.get_slot('room_id').capitalize() + '室' + \
                                 'ただ今、要求による要約すことができません。' + \
-                                '室のおすすめは:[info]' + \
+                                '他の予約できるのは次になります。:[info]' + \
                                 ('\n- ').join(['']+suggestions).capitalize() + \
-                                "[/info]\n"
-                            dispatcher.utter_message(ret)
+                                "[/info]\n会議室名をもう一度ご入力ください。"
+                            tracker.slots["pending"].append(ret)
+                            dispatcher.utter_message('\n'.join(tracker.slots["pending"]))
+                            tracker.slots["pending"] = []
+
                             return [SlotSet("room_id", None), SlotSet(REQUESTED_SLOT, 'room_id')]
+
+                        if room_id in ROOM_GROUPS and \
+                                len(set(ROOM_GROUPS[room_id]) & (set(suggestions))) == 0:
+                            self.suggestions = suggestions
+                            ret = room_format.capitalize() + 'ただ今、要求による要約すことができません。' + \
+                                '他の予約できるのは次になります。: [info]+ ' + \
+                                ('\n'+ "+ ").join(suggestions) + \
+                                "[/info]\n会議室名をもう一度ご入力ください。"
+                            tracker.slots["pending"].append(ret)
+                            dispatcher.utter_message('\n'.join(tracker.slots["pending"]))
+                            tracker.slots["pending"] = []
+
+                            return [SlotSet("room_id", None), SlotSet(REQUESTED_SLOT, "room_id")]
 
                         # if the room is ok to be booked
                         repeat = self.__class__.repeat_format(repeat)
                         repeat_end = datetime.strptime(repeat_end, "%Y-%m-%d").strftime("%Y年%m月%d日")
-                        repeat_start = datetime.strptime(repeat_start, "%Y-%m-%d").strftime("%Y年%m月%d日")
 
-                    dispatcher.utter_message(
+                    tracker.slots["pending"].append(
                         "下記の予約情報をご確認ください:\n[info]\n" + \
                         f"- タイトル: {subject}\n" + \
                         f"- 会議室: {room_format}\n" + \
@@ -288,6 +334,7 @@ class CancellableForm(FormAction, ABC):
                             if emails != '' else '') + \
                         "\n[/info]\n上記の情報で予約を完了するに、「OK」とご返事ください。"
                     )
+
                 elif slot == 'confirm_cancel':
                     room_id = tracker.get_slot('room_id')
                     datetime_1 = tracker.get_slot("datetime_1").split()
@@ -296,9 +343,14 @@ class CancellableForm(FormAction, ABC):
                         dt_format = f"{date_}・{datetime_1[1]}"
                     else:
                         dt_format = f"{date_}から{datetime_1[1]}に"
-                    dispatcher.utter_message("キャンセルの要求をご確認ください: \n[info]\n" + f"- 会議室: {room_id}\n" + f"- 時間: {dt_format}")
+                    tracker.slots["pending"].append("キャンセルの要求をご確認ください: \n[info]\n" + f"- 会議室: {room_id}\n" + f"- 時間: {dt_format}")
                 else:
-                    dispatcher.utter_message(template=f"utter_ask_{slot}", **tracker.slots)
+                    add_template_to_message_queue(
+                        f"utter_ask_{slot}", tracker, domain)
+
+                dispatcher.utter_message('\n'.join(tracker.slots["pending"]))
+                tracker.slots["pending"] = []
+
                 return [SlotSet(REQUESTED_SLOT, slot)]
 
     def validate_datetime_(
@@ -318,9 +370,16 @@ class CancellableForm(FormAction, ABC):
             valid = False
 
         if valid:
+            # assume that booking datetime has to be on the same date
+            if self.name() == 'booking_modify_add_form':
+                d1_split = d1.split(' ')
+                d2_split = d2.split(' ')
+                if d1_split[0] != d2_split[0]:
+                    date_0 = min(d1_split[0], d2_split[0])
+                    value = f'{date_0} {d1_split[1]} -> {date_0} {d2_split[1]}'
             return {"datetime_": value}
         else:
-            dispatcher.utter_message(template="utter_invalid_datetime")
+            add_template_to_message_queue("utter_invalid_datetime", tracker, domain)
             return {"datetime_": None}
 
     def validate_datetime_1(
@@ -392,7 +451,7 @@ class CancellableForm(FormAction, ABC):
 
         value = value.strip()
         if value == '' or not all(map(is_valid_email, re.split(r'\s*,\s*', value))):
-            dispatcher.utter_message(template="utter_invalid_attendees")
+            add_template_to_message_queue("utter_invalid_attendees", tracker, domain)
             return {"attendees": ''}
         else:
             return {"attendees": value}
@@ -512,13 +571,12 @@ class BookingModifyAddForm(CancellableForm):
                 try:
                     hangout, gcal, _ = booking_modify_add_book(
                         tracker.sender_id ,
-                        "HN-KN",
+                        location,
                         room_id,
                         d_f, d_t,
                         subject,
                         tracker.get_slot('repeat') if self.repeat else None,
                         tracker.get_slot('repeat_end') if self.repeat else None,
-                        tracker.get_slot('repeat_start') if self.repeat else None,
                         tracker.get_slot('capacity'),
                         [] if len(emails) == 0 else emails.split(',')
                     )
@@ -534,6 +592,7 @@ class BookingModifyAddForm(CancellableForm):
                     dispatcher.utter_message(template="utter_not_logged_in")
                 break
 
+
             if booked == len(room_ids):
                 if booked == 1:
                     dispatcher.utter_message(template="utter_already_booked")
@@ -543,19 +602,16 @@ class BookingModifyAddForm(CancellableForm):
             if success:
                 if self.repeat:
                     repeat = self.__class__.repeat_format(tracker.get_slot('repeat'))
-                dispatcher.utter_message("予約が完了しました。\n[info]" + \
+                dispatcher.utter_message("予約が完了しました。\n[info]\n" + \
                     f"- タイトル: {subject}\n" + \
                     f"- 会議室: {PROPER_NAMES[room_id]}\n" + \
-                    ((f"- 時間: {datetime_.split(' ')[1]}〜{datetime_.split(' ')[4]}\n" +
-                      " " * 10 + f"{repeat}、{tracker.get_slot('repeat_start')}〜{tracker.get_slot('repeat_end')}\n")
-                    if self.repeat
-                    else
-                        f"- 時間: {datetime_}\n") +
+                    f"- 時間: {datetime_}\n" + \
+                    ((" " * 10 + f"{repeat}、終了日: {tracker.get_slot('repeat_end')}。\n") if self.repeat else '') + \
                     f"- Google Calendar: {gcal}\n" + \
                     f"- Google Hangout: {hangout}" + \
                     (('\n' + ' '*10 + '+ ').join(["\n- ゲストリスト:"] + emails.split(',')) \
                             if emails != '' else '') + \
-                    "[/info]"
+                    "\n[/info]"
                 )
 
         return [AllSlotsReset()]
@@ -577,10 +633,22 @@ class BookingQueryEmpty(CancellableForm):
         Use `tracker` to request different list of slots
         depending on the state of the dialogue
         """
-        if 'room_id' not in [x['entity'] for x in tracker.latest_message['entities']] \
-                and tracker.get_slot('room_id') is None:
-            return ['datetime_']
-        return ['room_id', 'datetime_']
+        ret = ['datetime_']
+        if 'room_id' in [x['entity'] for x in tracker.latest_message['entities']] \
+                or tracker.get_slot('room_id') is not None:
+            ret.insert(0, 'room_id')
+
+        if 'repeat' in [x['entity'] for x in tracker.latest_message['entities']] \
+                or tracker.get_slot('repeat') is not None:
+            ret.append('repeat')
+
+            if 'repeat_start' in [x['entity'] for x in tracker.latest_message['entities']] \
+                    or tracker.get_slot('repeat_start') is not None:
+                ret.append('repeat_start')
+
+            ret.append('repeat_end')
+
+        return ret
 
     def submit(self,
                dispatcher: CollectingDispatcher,
@@ -591,9 +659,52 @@ class BookingQueryEmpty(CancellableForm):
 
         datetime_ = tracker.get_slot("datetime_")
         d_f, d_t = datetime_.split(' -> ')
+        get_subslots = (parse(d_t) - parse(d_f)).seconds >= 7200
         datetime_ = self.__class__.datetime_format(datetime_)
-        r = booking_query_empty("HN-KN", d_f, d_t)
 
+        # if the user asks about free rooms in a periodic schedule
+        if tracker.get_slot("repeat"):
+            time_start, time_end = map(
+                lambda x: x.split()[1],
+                tracker.get_slot("datetime_").split(' -> ')
+            )
+            repeat_start = tracker.get_slot("datetime_").split(' -> ')[0].split()[0]
+            repeat_start_2 = tracker.get_slot("repeat_start")
+            if repeat_start_2 is not None:
+                repeat_start = max(repeat_start, repeat_start_2)
+            try:
+                available_rooms = check_recurring_room(
+                    tracker.sender_id,
+                    location,
+                    time_start,
+                    time_end,
+                    tracker.get_slot('repeat'),
+                    tracker.get_slot('repeat_start'),
+                    tracker.get_slot('repeat_end')
+                )
+            except NotLoggedInException:
+                dispatcher.utter_message(template="utter_not_logged_in")
+                return [AllSlotsReset()]
+            except InvalidParameterException:
+                dispatcher.utter_message(template="utter_invalid_parameters")
+                return []
+
+            msg = "要求されている時間に、空室リストは下記となります。\n[info]" + \
+                ('\n' + "+ ").join(['']+available_rooms) + "[/info]"
+            dispatcher.utter_message(text=msg)
+            return []
+
+        try:
+            r = booking_query_empty(location, d_f, d_t)
+        except InvalidParameterException:
+            dispatcher.utter_message(template='uter_invalid_parameters')
+            return []
+
+        if not get_subslots:
+            r = dict(filter(lambda x: len(x[1]) == 1 and
+                            x[1][0].split(' ')[1].split(
+                                '-') == [d_f.split(' ')[1], d_t.split(' ')[1]],
+                            r.items()))
         room_id = tracker.get_slot("room_id")
         if room_id is None:
             region_format = ''
@@ -606,14 +717,22 @@ class BookingQueryEmpty(CancellableForm):
             dispatcher.utter_message(template="utter_no_free_room_slot", **tracker.slots)
         else:
             count = 0
-            ret = f"{datetime_.capitalize()}、{region_format}空室リストは下記となります。\n[info]"
+            ret = f"{datetime_.capitalize()}、{region_format}空室リストは下記となります。"
+
+            ret += "[info]\n"
+
             for k, v in r.items():
                 if (room_id is None and k in PROPER_NAMES) or \
                         (room_id in ROOM_GROUPS and k in ROOM_GROUPS[room_id]) \
                         or (room_id in PROPER_NAMES and room_id == k):
-                    ret += PROPER_NAMES[k] + ":\n"
-                    for timeslot in v:
-                        ret += " " * 10 + "+ " + timeslot + "\n"
+
+                    if get_subslots:
+                        ret += PROPER_NAMES[k] + ":\n"
+
+                        for timeslot in v:
+                            ret += " " * 10 + "+ " + timeslot  + "\n"
+                    else:
+                        ret += f'+ {k}\n'
                     count += 1
             if count == 0:
                 dispatcher.utter_message(template="utter_no_free_room_slot", **tracker.slots)
@@ -640,15 +759,7 @@ class BookingQueryRoomSchedule(CancellableForm):
         Use `tracker` to request different list of slots
         depending on the state of the dialogue
         """
-        if 'repeat' not in [x['entity'] for x in tracker.latest_message['entities']] \
-                and tracker.get_slot('repeat') is None:
-            return ['room_id', 'datetime_']
-
-        if 'repeat_start' not in [x['entity'] for x in tracker.latest_message['entities']] \
-                and tracker.get_slot('repeat_start') is None:
-            return ['datetime_', 'repeat', 'repeat_end']
-
-        return ['datetime_', 'repeat', 'repeat_start', 'repeat_end']
+        return ['room_id', 'datetime_']
 
     def submit(self,
                dispatcher: CollectingDispatcher,
@@ -662,35 +773,10 @@ class BookingQueryRoomSchedule(CancellableForm):
         d_f, d_t = datetime_.split(' -> ')
         datetime_ = self.__class__.datetime_format(datetime_)
 
-        if tracker.get_slot('repeat'):
-            time_start, time_end = map(
-                lambda x: x.split()[1],
-                tracker.get_slot("datetime_").split(' -> ')
-            )
-            repeat_start = tracker.get_slot(
-                "datetime_").split(' -> ')[0].split()[0]
-            repeat_start_2 = tracker.get_slot("repeat_start")
-            if repeat_start_2 is not None:
-                repeat_start = max(repeat_start, repeat_start_2)
-            try:
-                available_rooms = check_recurring_room(
-                    tracker.sender_id ,
-                    'HN-KN',
-                    time_start,
-                    time_end,
-                    tracker.get_slot('repeat'),
-                    tracker.get_slot('repeat_start'),
-                    tracker.get_slot('repeat_end')
-                )
-            except NotLoggedInException:
-                dispatcher.utter_message(template="utter_not_logged_in")
-                return [AllSlotsReset()]
-            msg = "その時間に空室は:[info]" + \
-                ('\n' + " " * 10 + "+ ").join(['']+available_rooms) + "[/info]"
-            dispatcher.utter_message(text=msg)
-            return []
+        r = booking_query_room_schedule(location, d_f, d_t, room_id)
 
-        r = booking_query_room_schedule("HN-KN", d_f, d_t, room_id)
+        r = {k: v for k, v in r.items() if len(v) > 0}
+
         if len(r) == 0:
             dispatcher.utter_message(template="utter_no_free_slot", **tracker.slots)
         else:
@@ -743,10 +829,11 @@ class BookingQueryRoomStatus(CancellableForm):
         then = now + timedelta(seconds=1)
         # assume error won't be thrown based on NLU design
         booked = booking_query_room_status(
-            "HN-KN", room_id,
-            now.strftime("%Y年%m月%d日・%H:%M:%S"),
-            then.strftime("%Y年%m月%d日・%H:%M:%S")
+            location, room_id,
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+            then.strftime("%Y-%m-%d %H:%M:%S")
         )
+
         try:
             occupied = get_headcount(room_id)
         except ConnectTimeout:
@@ -759,22 +846,21 @@ class BookingQueryRoomStatus(CancellableForm):
                 dispatcher.utter_message(template="utter_status_booked_none", **tracker.slots)
 
         elif not booked and occupied == 0:
-            message = f"ただ今、{room_id}は誰も予約されていませんが、誰も使用されていません。"
+            message = f"現在、カレンダ上は{room_id}が予約されていません。そして、実際に誰にも使われていないそうです。"
             dispatcher.utter_message(text=message, **tracker.slots)
 
         elif not booked and occupied > 0:
-            message = f"{room_id}室は誰も予約されていませんが、" \
-                    + f"{occupied}人に使用されています。"
+            message = f"現在、カレンダ上は{room_id}が予約されていません。でも、実際に" \
+                + f"{occupied}人がいるそうです。"
             dispatcher.utter_message(text=message, **tracker.slots)
 
         elif booked and occupied == 0:
-            message = f"ただ今、{room_id}室は誰かに予約されましたが、誰も " \
-                    + f"使用されていません。"
+            message = f"現在、カレンダ上は{room_id}が予約されています。でも、実際に誰にも使われていないそうです。"
             dispatcher.utter_message(text=message, **tracker.slots)
 
         elif booked and occupied > 0:
-            message = f"ただ今、{room_id}室は誰かに予約されました、" \
-                    + f"{occupied}人に利用されています。"
+            message = f"現在、カレンダ上は{room_id}が予約されています。そして、実際に" \
+                + f"{occupied}人がいるそうです。"
             dispatcher.utter_message(text=message, **tracker.slots)
 
         return []
@@ -817,9 +903,9 @@ class BookingQueryEmptyNow(Action):
             dispatcher.utter_message(template="utter_no_free_room", **tracker.slots)
         else:
             if room_id not in ROOM_GROUPS['18F'] and room_id != '18F':
-                region = '' if room_id not in ROOM_GROUPS else "区" + room_id
+                region = '' if room_id not in ROOM_GROUPS else room_id + "区に"
                 dispatcher.utter_message(
-                    f'現在、{region}に空室は下記となります。\n[info]' + \
+                    f'現在、{region}空室は下記となります。\n[info]' + \
                     "\n   + " + \
                     "\n   + ".join(free) + "[/info]"
                 )
@@ -859,21 +945,43 @@ class SupportedFeatures(Action):
         """Define what the form has to do
             after all required slots are filled"""
 
-        ret = "できる機能は:[info]"
-        ret += "\n+ ルームの予約機能:\n"
-        ret += ' '*10 + '来週の金曜日の午前10時から午後11時30分までCebu室を予約してください。\n'
-        ret += ' '*10 + '毎週予約をお願いします。\n'
-        ret += '+ 空のカレンダーを要求する機能：\n'
-        ret += ' '*10 + '明日9時から10時は空いていルームがありますか。\n'
-        ret += '+ ルームのスケジュールを求める機能：\n'
-        ret += ' '*10 + '明日バンコクを利用するには\n'
-        ret += '+ 現在にルームの状況を聞く機能：\n'
-        ret += ' '*10 + '今は誰かVientianeを使っていますか。\n'
-        ret += ' '*10 + 'Dili室には何人いますか？\n'
-        ret += '+ 今に空いているルームのリストを求める機能：\n'
-        ret += ' '*10 + '今空いているルームはありますか？\n'
-        ret += '+ 予約したルームのキャンセル機能：\n'
-        ret += ' '*10 + '今日10:00のVientianeルームをキャンセルしてください。'
+        ret = "(*)現在、提供する機能は下記となります。ご確認ください。[info]"
+        ret += "\n - 会議室の予約（毎日、毎週、隔週など振り返りモードを含む)：\n"
+        ret += ' ' * 10 + '来週の金曜日の午前10時から午後11時30分までCebuを予約してください。内容：振り返り会。誰も招待しません。\n'
+        ret += ' ' * 10 + '毎週の金曜日10時〜11時に、Bangkokを予約したいです。5月19日から6月30日まで。\n'
+        ret += ' ' * 10 + '隔週に7〜8時Booth 1を予約したい。開始日は3月22日、終了日は6月10日。タイトルはABCプロジェクトのSprintの会議です。\n'
+
+        ret += '\n- 空室リストの確認：\n'
+        ret += ' ' * 10 + '明日の9時〜10時に、空室はありますか。\n'
+        ret += ' ' * 10 + '毎週の火曜日の8時〜10時に、6月21日から7月30日まで、空室がありますか。\n'
+        ret += ' ' * 10 + 'Buzz区に午後、空室がありますか。\n'
+        ret += ' ' * 10 + '今空いている室はありますか。\n'
+
+        ret += '\n- 会議室のスケジュールの確認：\n'
+        ret += ' ' * 10 + '明日午後1時〜4時に、バンコクはいつ空いている？\n'
+        ret += ' ' * 10 + '6月30日に、シンガポールのスケジュールはどう？\n'
+
+        ret += '\n- 会議室の現在の状況の確認：\n'
+        ret += ' '*10 + '今Vientianeは誰が使用していますか。\n'
+        ret += ' ' * 10 + '現在、Diliには何人がいますか。\n'
+
+        ret += '\n- 予約した会議室の解約 (毎週、隔週など振り返りモードを含む)：\n'
+        ret += ' ' * 10 + '今日10:00のVientianeを解約してください。'
+        ret += ' '*10 + '5月19日・７時〜８時に、毎週のJakartaをキャンセルしたい。'
+
+        ret += '\n- 予約内容を確認する時、予約情報の変更：\n'
+        ret += ' ' * 10 + 'ちょっと、ネピドー室に変えてください。\n'
+        ret += ' ' * 10 + 'タイトルをABCに変更したい。\n'
+        ret += ' ' * 10 + 'すみません、時間を6月5日に７時〜9時に更新してください。\n'
+        ret += ' ' * 10 + 'nguyen.van.a@sun-asterisk.comを招待してください。\n'
+
+        ret += '\n- 他の機能：\n'
+        ret += ' ' * 10 + '毎週の予約で1日をキャンセルする。\n'
+        ret += ' ' * 10 + '位置(Fizz, Buzz, 18F)による空室を質問してから、会議室を予約する。\n'
+        ret += ' ' * 10 + '会議室を予約できない場合は、他の会議室を提案する。。\n'
+        ret += ' ' * 10 + 'ゲストを招待する (メールの送信を含む）\n'
+
+
         ret += '[/info]'
 
         dispatcher.utter_message(ret)
