@@ -30,9 +30,6 @@ entities:
 - datetime_1
 - subject
 - attendees
-- rooom_id
-- no_of_people
-- datetim_from
 slots:
   attendees:
     type: unfeaturized
@@ -82,25 +79,23 @@ responses:
   utter_ask_datetime_:
   - text: 予約時間をご入力ください。
   utter_reenter_datetime_:
-  - text: DD-MM-YYYY HH：MM -> DD-MM-YYYY HH：MMの形式で入力してください。
+  - text: YYYY年MM月DD日・HH時MM〜YYYY年MM月DD日・HH時MMの形式で入力してください。
   utter_ask_datetime_1:
   - text: キャンセルする会議の開始時間をご入力ください。
   utter_reenter_datetime_1:
-  - text: DD-MM-YYYY HH：MMの形式でご入力ください。
+  - text: YYYY年MM月DD日・HH時MMの形式でご入力ください。
   utter_ask_repeat_end:
-  - text: DD-MM-YYYY HH：MMの形式で繰り返すカレンダーの終了時間をご入力ください。
+  - text: 終了時間をご入力ください。
   utter_ask_subject:
   - text: 会議のタイトルをご入力ください。
   utter_abort:
   - text: 要求がキャンセルされました。
   utter_invalid_datetime:
   - text: 時間のフォーマットが無効です。
-  utter_ask_confirm_cancel:
-  - text: あなたは{datetime_1}の{room_id}室のキャンセルをご確認ください。
   utter_no_free_room:
   - text: 現在、空室はありません。
   utter_cancel_success:
-  - text: キャンセルの要求を完了しました。
+  - text: 要求された予約が存在したら、キャンセルしました。
   utter_add_friend:
   - text: チャットワークで、ボットのコンタクトをご追加ください。
   utter_insufficient_privilege:
@@ -114,7 +109,7 @@ responses:
   utter_no_free_slot:
   - text: '{datetime_}、{room_id}室は空いていないそうです。'
   utter_no_free_room_slot:
-  - text: '{datetime_}、空室がなさそうです。'
+  - text: '{datetime_}に、空室がなさそうです。'
   utter_status_available_none:
   - text: ただ今、カメラで確認できませんが、カレンダー上は予約されていません。
   utter_status_booked_none:
@@ -124,7 +119,7 @@ responses:
   utter_welcome:
   - text: お役に立てて嬉しいです。
   utter_not_logged_in:
-  - text: "予約できません。\nまず、https://rooms.sun-asterisk.vn にSun*Gsuiteアカウンでログインしてください。。"
+  - text: "予約できません。\nまず、https://rooms.sun-asterisk.vn にSun*Gsuiteアカウンでログインしてください。"
   utter_ask_attendees:
   - text: "会議にゲストを招待しますか？\nゲストを招待したい場合、ゲストのメアドリストをご入力ください。"
   utter_invalid_attendees:
@@ -137,6 +132,8 @@ responses:
   - text: ただ今、18階の会議室の状況が確認できません。
   utter_no_current_request:
   - text: 途中で要求はありません。
+  utter_clear_slot:
+  - text: 以前の情報を削除しました。
 actions:
 - utter_greeting
 - booking_modify_cancel_form
@@ -147,7 +144,6 @@ actions:
 - utter_invalid_datetime
 - action_booking_query_empty_now
 - utter_ask_datetime_1
-- utter_ask_confirm_cancel
 - booking_modify_add_form
 - utter_ask_subject
 - utter_ask_repeat_end
@@ -178,3 +174,4 @@ actions:
 - utter_reenter_datetime_1
 - utter_headcount_18f
 - utter_no_current_request
+- utter_clear_slot
