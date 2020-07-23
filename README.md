@@ -1,5 +1,5 @@
-# room-booking-bot-AI-japanese
-Japanese version of room booking chatbot
+# room-booking-bot-japanese-ver
+Japanese version of room booking chatbot based on [RASA](https://github.com/RasaHQ/rasa)
 
 **Room Booking Bot** can help you to book, cancel a meeting room and daily meeting room.
 
