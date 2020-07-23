@@ -3,13 +3,16 @@ import requests
 import json
 import string
 from datetime import datetime, timezone, timedelta
-from constants import ROOM_IDS, tz, PROPER_NAMES, ROOM_IDS_JP
+from api.hn import ROOM_IDS, tz, PROPER_NAMES, ROOM_IDS_JP
 from typing import Dict
 from dateutil.parser import parse, ParserError
 
 #Japanese tokenizer
 from sudachipy import tokenizer
 from sudachipy import dictionary
+
+#convert full-width character to half-width character
+import jaconv
 
 tokenizer_obj = dictionary.Dictionary().create()
 mode = tokenizer.Tokenizer.SplitMode.C
@@ -103,19 +106,20 @@ END_NOON = '13:00:00'
 
 # to be reused
 date_regexes = [
-    r'((午前|午後)?(きょう|きのう)+)',
-    r'((午前|午後)?(あした|あさって)+)',
-    r'((午前|午後)?(今日|昨日)+)',
-    r'((午前|午後)?(明日|明後日)+)',
-    r'(((今|来|再来)*(週))(の)?((午前|午後)?(月|火|水|木|金|土)*(曜日)))',
+    r'((きょう|きのう)(の)?((朝|午前|午後|あさ|ごぜん|ごご)?)+)',
+    r'((あした|あす|あさって)(の)?((朝|午前|午後|あさ|ごぜん|ごご)?)+)',
+    r'((今日|昨日)(の)?((朝|午前|午後|あさ|ごぜん|ごご)?)+)',
+    r'((明日|明後日)(の)?((朝|午前|午後|あさ|ごぜん|ごご)?)+)',
+    r'(((今|来|再来)(週))(の)?((月|火|水|木|金|土)*(曜日)?((朝|午前|午後|あさ|ごぜん|ごご)?)))',
     # for experimental support with t2-6 // EDIT: re.sub in correct_sentence handled it
     # r'(((sáng|chiều)?\s*(ngày)?\s*t[2-7])(( tuần)* (này|sau|tới)( nữa)*)*)',
-    r'(((20)?[0-9]{2})[年\/.\-・](1[0-2]{1}|0*[1-9]{1})[月\/.\-・](0*[1-9]|[12][0-9]|3[01])[日 ]+)',
-    r'((1[0-2]{1}|0*[1-9]{1})[月\/.\-・](0*[1-9]|[12][0-9]|3[01])[日 ]+)',
+    r'(((20)?[0-9]{2})[年\/.\-・](1[0-2]{1}|0*[1-9]{1})[月\/.\-・](0*[1-9]|[12][0-9]|3[01])[日 ](の)?((朝|午前|午後|あさ|ごぜん|ごご)?)+)',
+    r'((1[0-2]{1}|0*[1-9]{1})[月\/.\-・](0*[1-9]|[12][0-9]|3[01])[日 ](の)?((朝|午前|午後|あさ|ごぜん|ごご)?)+)',
     # combined with the above
     # r'((0*[1-9]|[12][0-9]|3[01])[-](1[0-2]{1}|0*[1-9]{1})[-](20)?[0-9]{2})',
     # only use this if needed (like with TTS)
     # r'((sáng|chiều)?(ngày)*(\s)*[0-9]+(\s)*(tháng)(\s)*[0-9]+)'
+    r'((午前|午後|朝|ごぜん|ごご|あさ))',
 ]
 
 
@@ -130,18 +134,18 @@ def time1_regex(message):
     time = re.findall(
         r'((1[0-9]|2[0-3]|0?[0-9]):([1-5][0-9]|0?[0-9])(:([1-5][0-9]|0?[0-9]))*)', message)
     time += re.findall(
-        r'((1[0-9]|2[0-3]|0?[0-9])(\s)*(時半|時|半|h|am|pm|:)(\s)*([1-5][0-9]|0?[0-9])*)', message)
+        r'((1[0-9]|2[0-3]|0?[0-9])(\s)*(時半|時|半|じ|じはん|h|am|pm|:)(\s)*([1-5][0-9]|0?[0-9])*)', message)
     if len(time) > 0:
         return [x[0] for x in time]
 
 
 def time_regex(message):
     time = re.findall(
-        r'(((1[0-9]|2[0-3]|0?[0-9])*(時半|時|半|h|am|pm|:)*([1-5][0-9]|0?[0-9])*(|分)*)(\s)*(-|~|から|->|〜|>)(\s)*((1[0-9]|2[0-3]|0?[0-9])*(時半|時|半|h|am|pm|:)*([1-5][0-9]|0?[0-9])*(|分)*)(?!\/|\-))', message)
+        r'(((1[0-9]|2[0-3]|0?[0-9])*(時半|時|半|じ|じはん|h|am|pm|:)*([1-5][0-9]|0?[0-9])*(|分|ふん|ぶん|ぷん)*)(\s)*(-|~|から|->|〜|>)(\s)*((1[0-9]|2[0-3]|0?[0-9])*(時半|時|半|じ|じはん|h|am|pm|:)*([1-5][0-9]|0?[0-9])*(|分|ふん|ぶん|ぷん)*)(?!\/|\-))', message)
     if len(time) > 0:
         time_split = re.split(r'(-|~|から|->|〜|>)', time[0][0])
         time = [[time_split[0]], [time_split[-1]]]
-        time += re.findall(r'(今|今から|いま|いまから|現在)', message)
+        time += re.findall(r'(今|今から|いま|いまから|現在|現在に|げんざい)', message)
     return time
 
 
@@ -154,24 +158,29 @@ def room_regex(message):
 
     for i in range(len(tokenizer)):
         # match official names first
+        if(tokenizer[i] == "booth" or tokenizer[i] == "ブース"):
+            word = tokenizer[i] + tokenizer[i+1]
+        else:
+            word = tokenizer[i]
+
         for room, proper_name in PROPER_NAMES.items():
-            if proper_name == tokenizer[i]:
+            if proper_name == word:
                 return room
 
         for room_vn, room_jp in ROOM_IDS_JP.items():
-            if room_jp == tokenizer[i]:
+            if room_jp == word:
                 return room_vn
 
-        if tokenizer[i] in ROOM_IDS:
+        if word in ROOM_IDS:
             if 'fizz' in message:
                 return 'fizz'
             elif 'buzz' in message:
                 return 'buzz'
-            return tokenizer[i]
+            return word
 
-        if tokenizer[i] == '13' and tokenizer[i + 1] == 'F':
+        if word == '13' and tokenizer[i + 1] == 'F':
             return '13F'
-        if tokenizer[i] == '18' and tokenizer[i + 1] == 'F':
+        if word == '18' and tokenizer[i + 1] == 'F':
             return '18F'
 
     return None
@@ -194,8 +203,10 @@ def repeat_regex(message):
     may return None for the fields it doesn't get (fallback on normal)
     '''
     repeat = re.findall(
-        r'(?i)((毎)((二|2))?(週|月|日))', message)
-    repeat += re.findall(r'(?i)((month|(bi)?week|dai)ly)', message)
+        r'(?i)((毎|隔)((二|2))?(週|月|日)(の)?((月|火|水|木|金|土)*(曜日)?))', message)
+    repeat += re.findall(
+        r'(?i)((二|2)(週|月|日)((間))?((ごとに|に))?((毎|一回|1回))?)', message)
+    repeat += re.findall(r'(?i)((month|(bi)?week|dyi)ly)', message)
     repeat += re.findall(r'(?i)(every\s?(two|2)?\s?(month|week|day))', message)
     recurring = ["定期", "固定", "繰り返す"]
     for regex in recurring:
@@ -203,62 +214,98 @@ def repeat_regex(message):
 
     if len(repeat) == 0:
         return None, None, None
+    repeat_str = repeat[0][0]
+    days = re.findall(r'(?i)((月|火|水|木|金|土)*(曜日))', repeat_str)
 
-    date_start = re.search(
-        '((' + '|'.join(date_regexes) + ')' + r'(?i)((から|〜|・|ー|->|-)+)' + ')', message) or re.search(r'(?i)(開始日は|開始日：|開始日:)(' + '|'.join(date_regexes) + ')', message)
+    date_start = re.search('((' + '|'.join(date_regexes) + ')' + r'(?i)((から|〜|・|ー|->|-)+)' + ')', message) or \
+                 re.search(r'(?i)(開始日は|開始日：|開始日:)(' + '|'.join(date_regexes) + ')', message)
 
     if date_start is None:
         date_start = None
     else:
         date_start = normalize_date(date_start.group(2))[0]
 
+        #Processing if days in regex_repeat
+        if len(days) > 0:
+            repeat_str = "毎週"
+            start = parse(date_start, dayfirst=False)
+            monday = start + timedelta(days= -start.weekday())
+            day_delta = 0
+
+            for key in day_abs:
+                if key in days[0][0]:
+                    day_delta += day_abs[key]
+                    break
+
+            date_start = monday + timedelta(days=day_delta, weeks=0)
+            if(start > date_start):
+                date_start += timedelta(weeks=1)
+
+            date_start = date_start.strftime("%Y-%m-%d")
+
+
     date_end = re.search('((' + '|'.join(date_regexes) + ')' + r'(?i)((まで)+)' + ')', message) or \
-            re.search(r'(?i)(終了日は|終了日：|終了日:)(' + '|'.join(date_regexes) + ')', message) or \
-            re.search(r'(?i)(から|〜|・|ー|->|-)(' + '|'.join(date_regexes) + ')', message)
+               re.search(r'(?i)(終了日は|終了日：|終了日:|完了日：|完了日:)(' + '|'.join(date_regexes) + ')', message) or \
+               re.search(r'(?i)(から|〜|・|ー|->|-)(' + '|'.join(date_regexes) + ')', message)
 
     if date_end is None:
         date_end = None
     else:
         date_end = normalize_date(date_end.group(2))[0]
 
-    repeat_str = repeat[0][0]
-
     if '週' in repeat_str or 'week' in repeat_str:
         repeat = 'W'
-    if '月' in repeat_str or 'month'in repeat_str:
+    if '月' in repeat_str or 'month' in repeat_str:
         repeat = 'M'
     if '日' in repeat_str or 'dai' in repeat_str or 'day' in repeat_str:
         repeat = 'D'
-    if '2' in repeat_str or 'hai' in repeat_str or 'cách' in repeat_str:
+    if '2' in repeat_str or '隔' in repeat_str in repeat_str:
         repeat += '-2'
-    # experimental
-    if 'cách nhật' in message:
-        repeat = 'D-2'
-    if message in recurring:
-        repeat = '_'
+    if repeat_str in recurring:
+        repeat = 'W'
     return date_start, date_end, repeat
 
 
 def subject_regex(message):
-    message = message.split('\n')
+    update_word = ['変更', '変', '入換', '変換', '繰り返', '手直', '更新']
+    replace_word = ['を', 'に', 'へ', 'は', 'です', 'だ']
+
+    #Check message for update intent
+    update = 0
+    for word in update_word:
+        if word in message:
+            update = 1
+            break
+
+    message = message.split('。')
     subject = []
+
     for line in message:
-        regex = re.findall(
-            r'(?i)(タイトル|title|題名|内容)\s*(\：|は)*\s*(.+)', line)
+        if update == 1:
+            regex = re.findall(
+                r'(?i)(タイトル|内容|会議名|ないよう|title|かいぎめい|題名|だいめ)\s*(\：|は|:|を)*\s*(.+)*(を|に|が|へ)?(変更|変|入換|変換|繰り返|手直|更新)', line)
+        else:
+            regex = re.findall(
+                r'(?i)(タイトル|内容|会議名|ないよう|title|題名|だいめ)\s*(\：|は|:|を)*\s*(.+)*(|です|だ|。)', line)
         if len(regex) > 0:
             subject += regex
+
     if len(subject) > 0:
         title = ''
         for t in subject:
             if t[0].lower() in ['プロジェクト', 'project']:
-                title += '[' + t[2] + '] '
+                title += '「' + t[2] + '」'
         for t in subject:
-            if t[0].lower() in ['タイトル', 'title', '題名']:
+            if t[0].lower() in ['タイトル', 'title', '会議名', 'かいぎめい' '題名', 'だいめ']:
                 title += t[2] + ' '
         for t in subject:
-            if t[0].lower() == '内容':
+            if t[0].lower() in ['ないよう', '内容']:
                 title += t[2] + ' '
+        #normalize title
         title = title.strip()
+        for re_word in replace_word:
+            title = title.replace(re_word, "")
+
         if title != '':
             return title
     return None
@@ -266,7 +313,7 @@ def subject_regex(message):
 
 def correct_sentence(sentence):
     sentence = re.sub(r'booth(\s)*', "booth", sentence)
-    sentence = sentence.translate(str.maketrans('\n', ' ', ";,!%.。"))
+    sentence = sentence.translate(str.maketrans('\n', ' ', ";,!%.。、"))
 
     new_sentence = []
     for word in jp_tokenizer(sentence):
@@ -296,12 +343,24 @@ def correct_sentence(sentence):
 
 def normalize_date(date):
     now = datetime.now(tz)
-    monday = now + timedelta(days=-now.weekday())
+    monday = now + timedelta(days= -now.weekday())
+    date = date.replace("の", "")
+    date_only = ""
 
-    if '午後' in date:
+    if '午後' in date or 'ごご' in date:
         apm = 'pm'
-    elif '午前' in date:
+        for i in range(len(date)):
+            if(date[i] == '日'):
+                break
+        date_only = date[:i+1]
+        date = date_only
+    elif '午前' in date or '朝' in date or 'ごぜん' in date or 'あさ' in date:
         apm = 'am'
+        for i in range(len(date)):
+            if(date[i] == '日'):
+                break
+        date_only = date[:i+1]
+        date = date_only
     else:
         apm = None
 
@@ -378,6 +437,14 @@ def normalize_time(time):
 def email_regex(message):
     # pattern = r'([^@\s,]+@([^@\s\.,]+\.)+[^@\s\.,]+)'
     # from here: https://stackoverflow.com/questions/201323/how-to-validate-an-email-address-using-a-regular-expression
+
+    #if no pattern
+    pattern = [r'(?i)((だれも|誰も|誰か|誰)+\s*(を|は|が|に)?\s*(招待しな|誘わな|招かな|勧誘しな|招待しません|誘いません|招きません|勧誘しません))',
+               r'(?i)((ゲスト|ゲストリスト)+\s*(を|は|が|に)?\s*(削除|キャンセル|取り消す))']
+
+    if re.findall('(' + '|'.join(pattern) + ')', message):
+        return [' ']
+
     pattern = r'''((?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])*")@(?:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?|\[(?:(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9]))\.){3}(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9])|[a-z0-9-]*[a-z0-9]:(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])+)\]))'''
     return [x[0] for x in re.findall(pattern, message)]
 
@@ -385,6 +452,9 @@ def email_regex(message):
 def processing_nlu(message):
     # print(message)
     # get emails before fixing message
+    #convert to half-width character
+    message = jaconv.z2h(message, digit=True, kana=False, ascii=True)
+
     attendees = email_regex(message)
     subject = subject_regex(message)
 
@@ -428,6 +498,8 @@ def processing_nlu(message):
             date_start, apm_start = normalize_date(date[0][0])
             date_end, apm_end = date_start, apm_start
             if len(date) > 1:
+                if(date_start != repeat_start):
+                    date_start = repeat_start
                 date_end, apm_end = normalize_date(date[1][0])
 
             list_date = []
@@ -508,9 +580,10 @@ def processing_nlu(message):
                                 ["subject", "room_id", "capacity",
                                  "datetime_", "datetime_1",
                                  "repeat", "repeat_start", "repeat_end",
-                                 'attendees']) \
+                                 'attendees'])\
                             if x is not None]
     return extracted
+
 
 if __name__ == '__main__':
     import pprint
