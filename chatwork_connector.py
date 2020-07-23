@@ -24,7 +24,7 @@ import threading
 import time
 from pprint import pprint
 from datetime import datetime
-from constants import tz
+from api.hn import tz
 
 # people's name, will be initialized at first message in
 db = None
